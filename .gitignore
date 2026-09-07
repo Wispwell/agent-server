@@ -1,0 +1,24 @@
+# Secrets and keys — NEVER commit these
+*.key
+*.pem
+keys/
+.env
+config/secrets.yaml
+
+# Runtime state
+data/
+ledger/*.jsonl
+*.sock
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+.vscode/

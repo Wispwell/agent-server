@@ -1,0 +1,13 @@
+# Role catalog — capability sets frozen at config time.
+#
+# The governor SELECTS a role and supplies parameters. It can never define a
+# capability set. Requested capabilities must satisfy:
+#     requested subset-of role.capabilities subset-of governor.ceiling
+#
+# Open question: granularity. Start with three and let friction teach the shape.
+
+roles: {}
+  # reader:
+  #   capabilities: ["cap:fs.read"]
+  #   resources: "workspace/**"
+  #   requires_review: false

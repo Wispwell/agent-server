@@ -1,0 +1,20 @@
+# Governor model configuration.
+#
+# The governor is UNTRUSTED — this file chooses which model to distrust, not
+# how much to trust it. Nothing here affects the containment boundary.
+
+provider:
+  base_url: "https://openrouter.ai/api/v1"
+  api_key_env: "OPENROUTER_API_KEY"
+
+model: ""            # OpenRouter `vendor/model` slug, e.g. "anthropic/claude-..."
+                     # Pick at M3; the evals may sweep this.
+
+request:
+  max_output_tokens: 8000
+  structured_output: true   # json_schema where the routed model supports it;
+                            # failures are schema rejections, not retries-with-repair
+
+attribution:         # optional OpenRouter headers
+  referer: ""
+  title: "agent-server"
