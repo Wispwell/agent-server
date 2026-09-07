@@ -215,24 +215,44 @@ write its 40th file in ninety seconds".
 
 ### 5.2 Rule set
 
-Explicit rules that plainly pass or fail:
+Explicit rules that plainly pass or fail. No risk score: the ACP paper's
+RS = B(c) + F_res + F_ctx + F_hist + F_anom with thresholds at 40/70 is
+invented constants dressed as specification, and is deliberately not used here.
+
+**Evaluation happens in two phases, and the split is a security property, not
+an implementation detail.**
+
+If a signature or proof-of-possession fails, the claimed AgentID cannot be
+trusted. Incrementing that agent's counters would then let anyone lock out
+anyone: three malformed requests stamped with a victim's AgentID, sent by an
+attacker holding no key at all, and a legitimate subagent is in cooldown.
 
 ```
-DENY      invalid signature, invalid proof-of-possession, expired token
-DENY      capability not in token, or resource outside token scope
-DENY      delegation chain invalid, or depth exceeded
-DENY      agent state in { suspended, revoked }, or cooldown active
-ESCALATE  capability flagged requires_review in the role catalog
-ESCALATE  rate on PatternKey over configured limit
-COOLDOWN  N denials within window W → agent locked for duration D
-ALLOW     otherwise → issue Execution Token
+Phase 1 — authenticate        no state may move
+    1  DENY  bad signature, or bad proof-of-possession
+    2  DENY  token expired or malformed
+    3  DENY  delegation chain invalid or too deep
+
+Phase 2 — authorise           state moves, in one transaction
+    4  DENY      agent suspended or revoked
+    5  DENY      cooldown active
+    6  DENY      tool unbound, or the resolver refused the arguments
+    7  DENY      capability not in token, or resource out of scope
+    8  ESCALATE  binding requires review
+    9  ESCALATE  PatternKey rate over limit
+   10  ALLOW     issue an execution token
 ```
 
-Deterministic, explainable, no tuning. The bottom two rules are the stateful
-part — what a permission list cannot express. A scored layer can be added later
-if it earns its place.
+First match wins, and the order is load-bearing because the *reason code* is
+what the evaluation counts (E1, E4). Rule 6 precedes rule 7 deliberately: if
+the resolver cannot name the resource there is nothing to scope-check, so
+"unresolvable" is the honest reason rather than "out of scope".
 
-### 5.3 PatternKey
+Rules 5 and 9 are the stateful part — what a permission list cannot express. A
+permission list can say "this agent may write files"; it cannot say "not its
+fortieth write in ninety seconds".
+
+### 5.3 PatternKey and the rate window
 
 ```
 PatternKey(a, c, r) = SHA-256(agent_id ‖ capability ‖ resource)
@@ -242,6 +262,26 @@ Anomaly counters are keyed by *context*, not by agent. Keying by agent alone
 lets a burst of harmless reads poison the score on an unrelated write, which
 produces false denials a stateless engine would never generate. Building it
 context-scoped costs one SHA-256 call.
+
+**The rate window slides.** A tumbling window — fixed buckets, counter reset at
+each boundary — is cheaper, but a burst straddling a boundary passes up to
+twice the limit while no bucket ever exceeds it. At the throughput this system
+sees, storing a timestamp per authenticated request and counting those inside
+the trailing window is exact and costs nothing, so there is no reason to accept
+a rule that can be doubled by timing.
+
+**What moves the state:**
+
+| Event | Effect |
+|---|---|
+| any *authenticated* request | append to that PatternKey's event log |
+| final DENY | `denial_count += 1` |
+| ESCALATE | nothing — an escalation is not yet a denial |
+| escalation refused by a human | `denial_count += 1` — it became one |
+| `denial_count ≥ N` within `W` | `cooldown_until = now + D`, count reset |
+
+Resetting the count when the cooldown is set matters: without it the agent
+re-locks the instant its first lock expires.
 
 ### 5.4 Two checkpoints
 
@@ -332,6 +372,31 @@ approximately true.
 Admission opens the database read-only. Mutation goes through a separate path
 that writes the corresponding ledger entry in the same transaction, so a
 capability grant changing is as auditable as a denial.
+
+### 5.7 Escalation
+
+An escalation blocks the call and asks a human. In v0 that is a CLI prompt,
+answered synchronously, with a timeout that **denies on expiry** — an
+unanswered question must not become an approval.
+
+Synchronous is the honest v0 choice and it has a cost worth naming: one
+unanswered prompt stalls the supervisor loop, because the subagent's call is
+still waiting. Asynchronous escalation — refuse now with `escalated`, let the
+governor re-plan or wait, resolve out of band — is more faithful to a real
+deployment and is post-v0.
+
+**Rule presets** are planned: operator-configured rules that auto-approve
+classes of escalation, so the same question is not asked repeatedly. They are a
+generalisation of promoting a binding out of review.
+
+They carry a specific hazard and it is the one in §8.7. Auto-approval is
+exactly the mechanism that produces deviation collapse: approve enough
+automatically and the boundary stops activating, BAR falls toward zero, and a
+working containment layer becomes indistinguishable from a dormant one. So
+auto-approvals are recorded as a **distinct outcome** in the ledger rather than
+folded into `approved`, and E4 reports Boundary Activation Rate both with and
+without them. A feature that quietly eats the metric proving the system works
+is worse than no feature.
 
 ## 6. Cryptographic mechanisms
 

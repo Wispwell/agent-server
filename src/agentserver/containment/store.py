@@ -39,18 +39,42 @@ CREATE TABLE IF NOT EXISTS bindings (
     PRIMARY KEY (server, tool)
 );
 
-CREATE TABLE IF NOT EXISTS agent_state (
+CREATE TABLE IF NOT EXISTS agents (
     agent_id       TEXT PRIMARY KEY,
+    public_key     TEXT    NOT NULL,          -- base64url raw Ed25519
     state          TEXT    NOT NULL DEFAULT 'active',
     denial_count   INTEGER NOT NULL DEFAULT 0,
-    cooldown_until INTEGER
+    cooldown_until INTEGER,
+    registered_at  INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS pattern_counts (
-    pattern_key  TEXT    NOT NULL,
-    window_start INTEGER NOT NULL,
-    count        INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (pattern_key, window_start)
+-- One row per authenticated request, so the rate window can slide. A tumbling
+-- window is cheaper but a burst straddling a boundary passes twice the limit;
+-- at this throughput an exact count costs nothing.
+CREATE TABLE IF NOT EXISTS pattern_events (
+    pattern_key TEXT    NOT NULL,
+    ts          INTEGER NOT NULL
+);
+
+-- Challenges are single-use. Recording consumption is what makes a captured
+-- proof-of-possession signature worthless on replay.
+CREATE TABLE IF NOT EXISTS challenges (
+    challenge  TEXT PRIMARY KEY,
+    issued_at  INTEGER NOT NULL,
+    consumed_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS escalations (
+    id            TEXT PRIMARY KEY,
+    agent_id      TEXT    NOT NULL,
+    capability    TEXT    NOT NULL,
+    resource      TEXT    NOT NULL,
+    action_sha256 TEXT    NOT NULL,
+    reason        TEXT    NOT NULL,
+    created_at    INTEGER NOT NULL,
+    state         TEXT    NOT NULL DEFAULT 'pending',
+    resolved_at   INTEGER,
+    resolved_by   TEXT
 );
 
 -- Single-use enforcement for execution tokens. An ET is authority; presenting
@@ -61,8 +85,11 @@ CREATE TABLE IF NOT EXISTS consumed_execution_tokens (
     consumed_at INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_pattern_window
-    ON pattern_counts (window_start);
+CREATE INDEX IF NOT EXISTS idx_pattern_events
+    ON pattern_events (pattern_key, ts);
+
+CREATE INDEX IF NOT EXISTS idx_escalations_pending
+    ON escalations (state, created_at);
 """
 
 
