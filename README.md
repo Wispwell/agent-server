@@ -127,3 +127,11 @@ normal case, handled as a schema rejection in `supervisor/contract.py` and
 recorded in the ledger. Model output is never repaired to make it parse:
 silently fixing it up is how an injected instruction gets laundered into a
 valid-looking action.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Apache-2.0 rather than MIT for the explicit patent grant: this is an access
+control mechanism, and MIT's silence on patents is the clause that makes an
+adopting organisation's legal review stall.
