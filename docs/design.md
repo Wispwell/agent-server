@@ -254,6 +254,85 @@ context-scoped costs one SHA-256 call.
 
 Both fail closed. Both write to the same ledger. Kept rigorously separate.
 
+### 5.5 Tool bindings
+
+Tools are not implemented here. They are provided by MCP servers, which means
+the tool surface is dynamic, externally controlled, and untrusted. What this
+system owns is the **binding**: the mapping from a tool call to the
+`(capability, resource)` pair admission reasons about.
+
+That mapping is where containment actually lives. A server declares
+`{"path": {"type": "string"}}`; that the argument is a path, that paths must be
+resolved before comparison, and that the resolved path is what the scope check
+sees, is entirely our interpretation. Get it wrong and every signature still
+verifies, every rule still fires, and the boundary is decorative — a token
+scoped to `workspace/**` admits `workspace/../../etc/passwd`, because as a raw
+string it matches.
+
+**Bindings are signed rows, not code.** A binding lives in the state backend:
+
+```
+(server, tool) -> capability, resolver, resolver_config,
+                  schema_sha256, requires_review, credential_ref,
+                  issued_by, sig
+```
+
+Adding a tool is an `INSERT`, not a release. The row is signed by an operator
+key and admission verifies that signature on load, so an unsigned or
+badly-signed row is invisible — exactly as for a capability token. Whoever can
+write the database gains nothing without the key, which makes the store a
+transport rather than a trust boundary.
+
+**Resolvers are code.** `resolver` names one of a small fixed set —
+`path_under_root`, `url_host`, `literal_field` — each implemented and tested
+once. Extraction cannot be data: resolving `../`, or getting the host out of
+`http://allowed.com@evil.com/`, is parsing, and a mini-language for
+security-critical parsing evaluated from a mutable store is strictly worse than
+a reviewed function. So: adding a tool of a known shape is a row; adding a new
+*kind* of resource is a release. The common operation is data, the rare one is
+code.
+
+Three rules bound what a signed binding can do:
+
+- **Capabilities declare which resolver kind they accept.** `cap:fs.read`
+  accepts only `path_under_root`. A binding whose resolver does not match its
+  capability is rejected at load. Since a call is admitted only if extraction
+  *succeeds*, a tool with no nameable resource has no valid resolver and
+  therefore cannot be bound at all — §4.2's "a tool whose resource cannot be
+  named cannot be contained", enforced mechanically rather than by discipline.
+- **New bindings are born requiring review.** `requires_review` defaults to
+  set. The tool works immediately, but every call escalates to the human until
+  a second signed row promotes it. A mistaken binding costs a prompt, not a
+  breach.
+- **Extraction may refuse.** Unparseable arguments are a denial, not a resource
+  equal to the raw string.
+
+**The advertised tool list is untrusted input.** Bindings are keyed by
+`(server, tool)`, never tool name alone. A tool advertised but unbound is
+denied — never "unknown, therefore allowed". And the declared input schema is
+pinned by hash: a server that redefines a bound tool's arguments has that tool
+disabled until someone re-pins it deliberately, because otherwise `resolver`
+keeps reading a field that no longer means what it did. Tool *descriptions* are
+untrusted text that reaches the model; they never reach the supervisor and
+never influence admission, which reads `(server, tool, args)` and nothing else.
+
+### 5.6 State backend
+
+SQLite, holding both the signed bindings and the admission counters
+(`pattern_count` per PatternKey, `denial_count`, `cooldown_until`).
+
+One store rather than two, for a reason beyond tidiness: admission must read
+counters, decide, and write both the decision and the updated counters **in a
+single transaction**. Without that, two concurrent calls both read "two
+denials" and are both approved when the third should have been refused — the
+enforcement property is lost precisely under the load that matters. Serializable
+evaluate-then-mutate is what makes the stateful rules in §5.2 true rather than
+approximately true.
+
+Admission opens the database read-only. Mutation goes through a separate path
+that writes the corresponding ledger entry in the same transaction, so a
+capability grant changing is as auditable as a denial.
+
 ## 6. Cryptographic mechanisms
 
 ### 6.1 Identity
@@ -591,7 +670,7 @@ mechanism.
 | Milestone | Contents |
 |---|---|
 | **M0 — trusted core** | Keypairs, sign/verify, JCS canonicalisation, tokens, ledger. No LLM; fully unit-testable in isolation. The piece that must be right. |
-| **M1 — admission engine** | Rule set, PatternKey counters, cooldown, ET issue/consume, escalation queue, counterfactual probe. Driven by a scripted fake agent; still no LLM. |
+| **M1 — admission engine** | SQLite state backend, signed tool bindings and the resolver set (§5.5–5.6), rule set, PatternKey counters, cooldown, ET issue/consume with single-use enforcement, escalation queue, counterfactual probe. Driven by a scripted fake agent; still no LLM. |
 | **M2 — control plane** | Supervisor loop, role catalog, budgets, subagent runner, MCP gateway. |
 | **M3 — governor** | Model in the loop, structured output contract, state digest injection, status normalisation. |
 | **M4 — evaluation** | Demo scenario, eval runs, ledger dumps, diagrams, writeup. |
@@ -659,6 +738,10 @@ planner is an empirical question this design can answer cheaply.
   Currently no — it enforces structure only. Whether that is a gap or a correct
   division of labour is unresolved.
 - **Container sandboxing.** First post-v0 milestone; cost not yet estimated.
+- **Growth of the resolver set.** Every new resolver is new parsing in the
+  security path. If the set grows past a handful, the review burden is the real
+  cost of adding tools, and the "adding a tool is data" property quietly
+  degrades toward "adding a tool is code".
 
 ---
 
