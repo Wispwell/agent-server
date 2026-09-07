@@ -831,14 +831,23 @@ nothing routes around it. Containment is strictly stronger and requires a
 substrate boundary, not merely a protocol one.
 
 Full containment means: subagent in its own container, no ambient credentials,
-no egress except to the gateway. **v0 ships process isolation** — subprocess
-with a scrubbed environment, no credentials anywhere in its reachable state,
-gateway as the only configured route to tools.
+no egress except to the gateway.
 
-This is honest containment against an injected model that *follows its
-instructions*, and inadequate against one that deliberately probes for escape.
-Container isolation is the first post-v0 milestone. Any writeup must say so
-rather than overclaiming.
+**What v0 actually ships is weaker than that, and weaker than this document
+originally claimed.** The subagent's behaviour tree runs *in-process*. The
+authority boundary is real — the subagent holds no credentials, those live in
+the gateway's vault and are attached on the way out, and every tool call passes
+through admission — but the *substrate* boundary is not: nothing prevents that
+code from reading a file directly instead of asking for it.
+
+So the honest statement of the property is: **v0 contains a model that is
+steered by what it reads, and does not contain code that is trying to escape.**
+For the threat this system is built around — indirect prompt injection — that
+is the relevant case, and the demo exercises exactly it. It is not containment
+against a hostile implementation.
+
+Running the tree in a separate process with a scrubbed environment is the
+immediate next step; container isolation follows. Neither is done.
 
 ### 9.2 Other bounds
 
@@ -862,6 +871,13 @@ rather than overclaiming.
   them, and the last writer wins silently. Per-resource leases would fix it and
   are post-v0; until then, concurrent same-resource work is outside what the
   system claims.
+- **A capability token carries one resource pattern.** So a role holding
+  capabilities in two different resource domains — filesystem paths and network
+  hosts, say — cannot scope them separately: one pattern has to cover both, and
+  the only pattern that does is too broad to mean anything. In practice roles
+  are single-domain, which is a reasonable default but is a limitation rather
+  than a decision. The fix is a per-capability scope map in the token, and it
+  is not in v0.
 - **Observation is a bounded view.** The environment listing is depth- and
   entry-capped so it can be assembled every turn, which means a governor can be
   unaware of resources that exist within its own ceiling. Cheap to reason about,
