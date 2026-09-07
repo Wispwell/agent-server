@@ -78,9 +78,9 @@ src/agentserver/
   crypto/       M0  Ed25519 identity, JCS canonicalisation, capability + execution tokens
   ledger/       M0  append-only hash-chained audit log
   containment/  M1  admission engine, risk state, registry, escalation, secret vault
-  supervisor/   M2  the loop, role catalog, budgets, output contract, lifecycle
+  supervisor/   M2  the loop, observation, role catalog + behaviour trees, budgets, contract
   gateway/      M2  MCP proxy, server-side credential injection
-  subagent/     M2  sandboxed runner, proof-of-possession client
+  subagent/     M2  behaviour-tree runner (sandboxed), proof-of-possession client
   governor/     M3  planner via OpenRouter (UNTRUSTED, no callable tools)
 evals/          M4  E1-E5 plus the counterfactual probe
 scripts/demo.py M4  the injection demo

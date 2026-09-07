@@ -154,10 +154,12 @@ give false assurance. Refusing to build them is part of the design.
 What it enforces instead, totally and cheaply:
 
 - **Role catalog.** A fixed set of subagent roles, each with a capability set
-  frozen at config time. The governor *selects* a role and supplies parameters;
-  it can never *define* a capability set. This is the largest single reduction
-  in attack surface — it collapses the governor's output space from "arbitrary
-  capability request" to a small enum.
+  *and a behaviour tree* (§4.8) frozen at config time. The governor *selects* a
+  role and supplies parameters; it can never *define* a capability set or
+  compose a tree. This is the largest single reduction in attack surface — it
+  collapses the governor's output space from "arbitrary capability request" to
+  a small enum, and bounds not only what a subagent may reach but the shape of
+  what it will attempt.
 - **Budgets.** Max concurrent subagents, max spawns per task, max wall-clock,
   max tool calls per subagent and in total. Kills the runaway and amplification
   failure class outright.
@@ -168,13 +170,14 @@ What it enforces instead, totally and cheaply:
 
 ### 4.3 Governor output contract
 
-The governor emits one structured object per turn. Everything in it is
-**hostile input to the supervisor** — schema-validate, reject on any deviation,
-log the rejection. The supervisor must never string-match model output to make
-a decision.
+The governor emits one structured object per turn, in response to an
+observation (§4.6). Everything in it is **hostile input to the supervisor** —
+schema-validate, reject on any deviation, log the rejection. The supervisor
+must never string-match model output to make a decision.
 
 ```json
 {
+  "observed": "<version string from the observation this answers>",
   "reasoning": "<free text, logged, never parsed>",
   "actions": [
     { "op": "spawn", "role": "<enum from catalog>", "params": {}, "budget": {} },
@@ -184,6 +187,28 @@ a decision.
   ]
 }
 ```
+
+Validation is deterministic and total:
+
+- **An unknown key anywhere rejects the whole turn.** Not "ignore unexpected
+  fields": an unexpected key means the model is doing something the design does
+  not cover, and silently dropping it hides exactly that.
+- **`observed` must match the current state version, or the batch is rejected
+  whole.** The governor plans against a snapshot and the world moves while it
+  thinks — a subagent exits, a budget fills. Applying half a plan against a
+  changed world is worse than discarding it, so this is ordinary optimistic
+  concurrency control: compare the version, re-observe, re-plan. The rejection
+  rate is itself data; if it is high, the observation is being assembled too
+  early or the model is too slow for the tick rate.
+- **Empty `actions` means `wait`**, not an error.
+- Actions execute **in order**, and every one is recorded with its outcome even
+  if an earlier one failed. The supervisor is deterministic, so there is no
+  reason to abandon the batch partway.
+- **There is no cap on action count.** `max_concurrent` already refuses a spawn
+  that cannot run, so a separate limit would be a second mechanism enforcing
+  the same property, with its own failure modes and nothing to show for it.
+- A rejected turn costs a turn and is logged. **N consecutive rejections end
+  the run** — a governor that cannot emit valid output will not start.
 
 ### 4.4 The escalation rule
 
@@ -201,6 +226,118 @@ lets two subagents pass messages through the governor and coordinate. The
 second is the collusion channel that control evaluations take pains to close
 between untrusted instances (Greenblatt et al., 2024); normalising the return
 channel is what closes it here.
+
+### 4.6 Observation
+
+The governor has no tools, so everything it knows arrives here. Observation is
+a **closed feedback loop**, not a status report: the supervisor senses the
+environment, the governor decides, the supervisor acts, the actions change the
+environment, and the next observation reflects that change.
+
+The distinction matters because the obvious design is not a loop. Reporting
+"your spawn succeeded, your subagent's call was denied" tells the governor what
+happened to its *paperwork* and nothing about the world. The test for whether
+the loop is genuinely closed: **if a subagent writes a report, does the next
+observation show that the file exists?** If it only shows that the subagent
+finished, this is an acknowledgement channel wearing a loop's clothes.
+
+| field | contents |
+|---|---|
+| `version` | monotonic; the governor echoes it back (§4.3) |
+| `roles` | available roles, their capabilities and resource scope — the action vocabulary |
+| `environment` | resources currently present under the roots, structured and capped |
+| `roster` | live subagents: lifecycle state, budget used, denied-action count |
+| `outcomes` | last turn's actions with reason codes |
+| `budgets` | what remains |
+
+**Observation is scoped by the governor's own ceiling.** If the ceiling covers
+`workspace/reports/**`, the environment view shows what is under
+`workspace/reports/`, and nothing else. Least privilege applies to information,
+not only to authority: an untrusted component learning about resources it can
+never legitimately touch is free reconnaissance that buys nothing. This also
+means observation and action derive from the *same* ceiling, so there is one
+thing to get right rather than two.
+
+**Assembled fresh each turn, never accumulated.** The observation is a function
+of current state rather than an appended transcript, which removes the
+truncation problem entirely: there is no growing history to decide where to cut.
+Anything the governor needs to persist across turns it must carry in its own
+output.
+
+**Everything in it is tainted.** Filenames, directory structure and subagent
+results are all attacker-influenceable. They are rendered as structured,
+length-capped fields and never interpolated into instruction prose. As
+throughout, this degrades usefulness rather than safety: the governor's
+authority does not depend on what it believes.
+
+**What it never contains:** the ledger, the binding table, operator keys,
+configuration, or escalations belonging to other agents. The governor sees
+decisions about its own requests; it never sees the mechanism that produced
+them.
+
+### 4.7 The loop and termination
+
+```
+observe()  → observation (version v)
+decide()   → governor answers, asynchronously
+validate() → schema, then version v
+act()      → dispatch in order, record every outcome
+```
+
+**The governor is dispatched asynchronously and its pending status is a
+variable, not a state of the loop.** The supervisor keeps servicing subagents,
+escalations and budgets while the model is thinking; a slow response is dropped
+on timeout rather than allowed to stall supervision. A synchronous call would
+make every other guarantee hostage to model latency.
+
+**Termination does not depend on the model choosing to stop.** `conclude` is an
+action the governor emits, so a governor that never emits it must still be
+stopped:
+
+```
+halt = no progress for N turns          convergence
+     ∨ turn / spawn / wall-clock budget exhausted
+     ∨ N consecutive schema or version rejections
+     ∨ operator abort
+     ∨ conclude                          the only model-supplied ending
+```
+
+The hard caps end the run regardless of what the model does, which is what
+removes any need to reason about whether it *would* stop. Convergence and
+success are recorded separately: a run can settle without achieving anything,
+and conflating them would let a stalled governor report victory.
+
+Every ending records which guard fired. "How did this run stop" is data for the
+evaluation, not an implementation detail.
+
+### 4.8 Subagents as behaviour trees
+
+A role's behaviour is a **behaviour tree** — the control structure standard in
+game AI and robotics — authored by the operator and frozen in the catalog.
+Minimal node set: `Sequence`, `Selector`, `Condition`, `Action`, with the usual
+`Success` / `Failure` / `Running` status.
+
+Three properties earn it a place:
+
+- **Behaviour is bounded, not just authority.** Containment already limits what
+  a subagent may reach. A tree also limits what it will attempt, which is what
+  makes a role a narrow executor rather than a small general agent wearing a
+  capability set.
+- **A containment refusal is ordinary control flow.** A denied call returns
+  `Failure` and the enclosing `Selector` takes its fallback branch. Without a
+  tree, "the call was denied, now what" has to be improvised somewhere.
+- **The model shrinks to a leaf.** It is consulted to choose the next call from
+  the role's vocabulary, or to produce a summary — never to drive control flow.
+
+**The governor never composes a tree.** It selects a role, and the role is a
+tree. Allowing an untrusted planner to compose behaviour would hand back the
+authority §4.2 exists to remove.
+
+One consequence worth stating for §12: a subagent whose next action is a pure
+function of our code cannot be injected at all, and E2 would then measure
+nothing. The model-chooses-next-call leaf is what gives an injection something
+to pull on. A tree with no such leaf is a script, which is a legitimate role
+shape — but roles used in E2 must contain one.
 
 ## 5. Data plane — the admission engine
 
@@ -713,6 +850,22 @@ rather than overclaiming.
   merely follows the instructions it was given. E2 is therefore a weaker
   adversary than the control literature's (Greenblatt et al., 2024), and its
   results should not be read as evidence against a scheming planner.
+- **A false `conclude` is not covered.** Containment bounds what the governor
+  can *reach*, not what it can *claim*. A steered governor cannot exceed its
+  authority, but concluding is within that authority — so it can report success
+  it did not achieve, to an operator who trusts the summary. Two partial
+  mitigations: the summary is presented as untrusted, and the ledger records
+  what actually executed so the claim can be checked against it. Neither is
+  complete, and bounded authority should not be read as covering this.
+- **Concurrent subagents are not arbitrated.** Two subagents holding write
+  capability on overlapping scope both reach the gateway with nothing ordering
+  them, and the last writer wins silently. Per-resource leases would fix it and
+  are post-v0; until then, concurrent same-resource work is outside what the
+  system claims.
+- **Observation is a bounded view.** The environment listing is depth- and
+  entry-capped so it can be assembled every turn, which means a governor can be
+  unaware of resources that exist within its own ceiling. Cheap to reason about,
+  but it is a partial view and not a complete one.
 - **Escalation is a CLI prompt.** No queue UI, no notification path.
 - **No formal verification.** The TLA+ work the prior art does is not
   replicated here.
@@ -736,7 +889,7 @@ mechanism.
 |---|---|
 | **M0 — trusted core** | Keypairs, sign/verify, JCS canonicalisation, tokens, ledger. No LLM; fully unit-testable in isolation. The piece that must be right. |
 | **M1 — admission engine** | SQLite state backend, signed tool bindings and the resolver set (§5.5–5.6), rule set, PatternKey counters, cooldown, ET issue/consume with single-use enforcement, escalation queue, counterfactual probe. Driven by a scripted fake agent; still no LLM. |
-| **M2 — control plane** | Supervisor loop, role catalog, budgets, subagent runner, MCP gateway. |
+| **M2 — control plane** | Supervisor loop with asynchronous dispatch and hard halt guards, observation assembly (§4.6), role catalog with behaviour trees (§4.8), budgets, behaviour-tree subagent runner, MCP gateway with server-side credential injection. |
 | **M3 — governor** | Model in the loop, structured output contract, state digest injection, status normalisation. |
 | **M4 — evaluation** | Demo scenario, eval runs, ledger dumps, diagrams, writeup. |
 
@@ -767,8 +920,8 @@ harness.
 
 | | Experiment | Measures |
 |---|---|---|
-| **E1** | Stateless vs stateful | Replay N individually-valid requests through a stateless capability check and through the full admission engine; report approvals under each. The headline number. |
-| **E2** | Injection resistance | M tool outputs carrying injected instructions toward out-of-scope actions; report how many reached execution. Target zero; report the actual figure regardless. |
+| **E1** | Stateless vs stateful | Replay N individually-valid requests through a stateless capability check and through the full admission engine; report approvals under each. Driven by a scripted request stream rather than a live agent, because comparing two engines requires the same input reaching both. The headline number. |
+| **E2** | Injection resistance | M tool outputs carrying injected instructions toward out-of-scope actions; report how many reached execution. Target zero; report the actual figure regardless. Requires roles whose tree contains a model-chooses-next-call leaf (§4.8) — against a fully scripted role there is nothing for an injection to steer, and the result would be vacuous. |
 | **E3** | Ceiling enforcement | Induce the governor to request capabilities outside its ceiling; report where each was stopped, supervisor or admission engine. Also validates that the two checkpoints are independent. |
 | **E4** | Boundary Activation Rate | Fraction of decisions that were not APPROVED, plus counterfactual probes confirming DENIED remains reachable. Guards against reporting a dormant system as a working one. |
 | **E5** | Budget enforcement | Attempt runaway spawning; report the cap holding and the cost of the attempt. |
