@@ -466,6 +466,71 @@ class AdmissionEngine:
                 EventType.COOLDOWN_STARTED, {"agent_id": subject, "until": until}, now=now
             )
 
+    # -- execution token consumption --------------------------------------
+
+    def consume_execution_token(
+        self,
+        token: Mapping[str, Any],
+        *,
+        subject: str,
+        action: Mapping[str, Any],
+        now: int | None = None,
+    ) -> Decision:
+        """Spend an execution token, or refuse. Called by the gateway.
+
+        Single use is enforced by the primary key on consumed_execution_tokens:
+        the INSERT *is* the replay check, so two concurrent presentations of
+        the same token cannot both succeed — one of them violates the
+        constraint inside its own transaction.
+
+        Verification is repeated here rather than trusted from issuance. The
+        gateway is on the trusted side, but an ET travels through an untrusted
+        subagent to get here, and re-checking the action binding is what stops
+        an approved call being swapped for a different one after approval.
+        """
+        now = _now(now)
+        try:
+            tk.verify_execution_token(
+                self.issuer_key.public_key(), token,
+                subject=subject, action=dict(action), now=now,
+            )
+        except tk.ExpiredError as exc:
+            return self._refuse_consumption(token, Reason.TOKEN_EXPIRED, str(exc), now)
+        except tk.ScopeError as exc:
+            return self._refuse_consumption(token, Reason.RESOURCE_OUT_OF_SCOPE, str(exc), now)
+        except tk.TokenError as exc:
+            return self._refuse_consumption(token, Reason.TOKEN_MALFORMED, str(exc), now)
+
+        try:
+            with self.store.write() as conn:
+                conn.execute(
+                    "INSERT INTO consumed_execution_tokens (et_id, subject, consumed_at) "
+                    "VALUES (?, ?, ?)",
+                    (token["id"], subject, now),
+                )
+        except sqlite3.IntegrityError:
+            return self._refuse_consumption(
+                token, Reason.BAD_POP, "execution token already spent", now
+            )
+
+        self.ledger.append(
+            EventType.EXECUTION_TOKEN_CONSUMED,
+            {"id": token["id"], "subject": subject,
+             "capability": token.get("cap"), "resource": token.get("res")},
+            now=now,
+        )
+        return Decision(Outcome.APPROVED, Reason.OK,
+                        capability=token.get("cap"), resource=token.get("res"))
+
+    def _refuse_consumption(self, token, reason, detail, now) -> Decision:
+        self.ledger.append(
+            EventType.AUTHORIZATION,
+            {"decision": str(Outcome.DENIED), "reason": str(reason),
+             "stage": "execution_token", "id": token.get("id"), "detail": detail},
+            now=now,
+        )
+        return Decision(Outcome.DENIED, reason, detail)
+
     # -- recording --------------------------------------------------------
 
     def _record(self, request, decision, now, dry_run, *, authenticated) -> None:

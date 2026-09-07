@@ -2,102 +2,17 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from agentserver.containment.admission import (
-    AdmissionConfig,
-    AdmissionEngine,
     Outcome,
-    ProofOfPossession,
     Reason,
     Request,
-    ToolCall,
 )
-from agentserver.containment.store import Store
-from agentserver.crypto.keys import agent_id, generate_keypair, public_bytes
-from agentserver.crypto.signing import b64u_encode, pop_message, sign
+from agentserver.crypto.keys import agent_id, generate_keypair
 from agentserver.crypto.tokens import issue_capability_token, verify_execution_token
-from agentserver.ledger.chain import Ledger
-from agentserver.policy import Policy
-from agentserver.tools.bindings import sign_binding, verify_binding
 
-NOW = 1_757_200_000
-
-
-@pytest.fixture
-def env(tmp_path):
-    """A complete containment server with one bound tool and one agent."""
-    (tmp_path / "workspace" / "reports").mkdir(parents=True)
-    (tmp_path / "workspace" / "reports" / "q3.md").write_text("data")
-    (tmp_path / "secret.txt").write_text("secret")
-
-    operator, issuer, agent = generate_keypair(), generate_keypair(), generate_keypair()
-    policy = Policy.from_dict({
-        "operators": {agent_id(operator): b64u_encode(public_bytes(operator))},
-        "capabilities": {
-            "cap:fs.read": {"resolver": "path_under_root"},
-            "cap:net.fetch": {"resolver": "url_host"},
-        },
-        "roots": {"workspace": str(tmp_path / "workspace")},
-    })
-
-    def bind(**kw):
-        fields = {
-            "server": "fs", "tool": "read_file", "capability": "cap:fs.read",
-            "resolver": "path_under_root",
-            "resolver_config": {"field": "path", "root": "workspace"},
-            "schema_sha256": "ab" * 32, "requires_review": False,
-        }
-        fields.update(kw)
-        return verify_binding(policy, sign_binding(operator, **fields))
-
-    bindings = {b.key: b for b in [
-        bind(),
-        bind(server="web", tool="fetch", capability="cap:net.fetch",
-             resolver="url_host", resolver_config={"field": "url"}),
-    ]}
-
-    store = Store(tmp_path / "state.db")
-    ledger = Ledger(tmp_path / "ledger.jsonl")
-    engine = AdmissionEngine(
-        store, policy, ledger, issuer, bindings,
-        config=AdmissionConfig(rate_limit_count=3, rate_limit_window=60, cooldown_denials=3),
-    )
-    engine.register_agent(agent_id(agent), b64u_encode(public_bytes(agent)), now=NOW)
-
-    token = issue_capability_token(
-        issuer, subject=agent_id(agent), capabilities=["cap:fs.read"],
-        resource="workspace/reports/**", expires_at=NOW + 3600,
-    )
-    yield {
-        "engine": engine, "store": store, "ledger": ledger, "policy": policy,
-        "issuer": issuer, "agent": agent, "operator": operator, "token": token,
-        "tmp": tmp_path, "bind": bind,
-    }
-    store.close()
-
-
-def request(env, path="reports/q3.md", *, key=None, now=NOW, server="fs", tool="read_file",
-            token=None, args=None):
-    engine, agent = env["engine"], key or env["agent"]
-    call = ToolCall(server, tool, args if args is not None else {"path": path})
-    challenge = engine.issue_challenge(now=now)
-    body = json.dumps(call.action(), sort_keys=True).encode()
-    sig = b64u_encode(sign(agent, pop_message(challenge, "POST", "/authorize", body)))
-    return Request(
-        call=call, token=token or env["token"],
-        pop=ProofOfPossession(challenge, "POST", "/authorize", body, sig),
-    )
-
-
-def denial_count(env):
-    return env["store"].one(
-        "SELECT denial_count, cooldown_until FROM agents WHERE agent_id=?",
-        (agent_id(env["agent"]),),
-    )
-
+from .helpers import NOW, denial_count, request
 
 # --------------------------------------------------------------------------
 # the happy path
@@ -364,4 +279,70 @@ def test_every_decision_is_recorded_with_its_reason(env):
         "ok", "resource_out_of_scope", "bad_pop",
     ]
     assert [e["data"]["authenticated"] for e in entries] == [True, True, False]
+    assert env["ledger"].verify() == len(env["ledger"])
+
+
+# --------------------------------------------------------------------------
+# execution token consumption — single use is what makes an ET authority
+# --------------------------------------------------------------------------
+
+
+ACTION = {"server": "fs", "tool": "read_file", "args": {"path": "reports/q3.md"}}
+
+
+def test_an_execution_token_can_be_spent_once(env):
+    engine = env["engine"]
+    d = engine.evaluate(request(env), now=NOW)
+    subject = agent_id(env["agent"])
+
+    first = engine.consume_execution_token(
+        d.execution_token, subject=subject, action=ACTION, now=NOW
+    )
+    assert first.outcome is Outcome.APPROVED
+
+    second = engine.consume_execution_token(
+        d.execution_token, subject=subject, action=ACTION, now=NOW
+    )
+    assert second.outcome is Outcome.DENIED
+    assert "already spent" in second.detail
+
+
+def test_an_execution_token_cannot_be_spent_on_a_different_action(env):
+    """The swap attack: get approval for a benign call, present a different one."""
+    engine = env["engine"]
+    d = engine.evaluate(request(env), now=NOW)
+    swapped = {"server": "fs", "tool": "read_file", "args": {"path": "../../secret.txt"}}
+    out = engine.consume_execution_token(
+        d.execution_token, subject=agent_id(env["agent"]), action=swapped, now=NOW
+    )
+    assert out.outcome is Outcome.DENIED
+    assert out.reason is Reason.RESOURCE_OUT_OF_SCOPE
+
+
+def test_an_execution_token_cannot_be_spent_by_another_agent(env):
+    engine = env["engine"]
+    d = engine.evaluate(request(env), now=NOW)
+    out = engine.consume_execution_token(
+        d.execution_token, subject=agent_id(generate_keypair()), action=ACTION, now=NOW
+    )
+    assert out.outcome is Outcome.DENIED
+
+
+def test_an_expired_execution_token_is_refused_even_if_never_spent(env):
+    engine = env["engine"]
+    d = engine.evaluate(request(env), now=NOW)
+    out = engine.consume_execution_token(
+        d.execution_token, subject=agent_id(env["agent"]), action=ACTION, now=NOW + 999
+    )
+    assert out.outcome is Outcome.DENIED and out.reason is Reason.TOKEN_EXPIRED
+
+
+def test_consumption_is_recorded_in_the_ledger(env):
+    engine = env["engine"]
+    d = engine.evaluate(request(env), now=NOW)
+    engine.consume_execution_token(
+        d.execution_token, subject=agent_id(env["agent"]), action=ACTION, now=NOW
+    )
+    kinds = [e["type"] for e in env["ledger"]]
+    assert "execution_token_consumed" in kinds
     assert env["ledger"].verify() == len(env["ledger"])
