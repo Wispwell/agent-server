@@ -25,7 +25,10 @@ import yaml
 from mcp import StdioServerParameters
 
 from .config import Config, ConfigError
+from .containment.admission import AdmissionEngine
+from .containment.escalation import cli_handler
 from .containment.store import Store
+from .context.loader import Loader
 from .crypto.keys import (
     agent_id,
     generate_keypair,
@@ -34,16 +37,24 @@ from .crypto.keys import (
     save_private_key,
 )
 from .crypto.signing import b64u_encode
-from .gateway.proxy import schema_hash
+from .gateway.credentials import Vault
+from .gateway.proxy import Gateway, schema_hash
 from .gateway.transport import MCPTransport
 from .ledger.chain import Ledger, LedgerCorruption
+from .providers.openrouter import OpenRouterClient, ProviderError
+from .subagent.decide import model_chooser
+from .subagent.runner import Runner
+from .supervisor.budgets import Budget  # noqa: F401 — budget comes from config
 from .supervisor.catalog import (
+    Catalog,
     CatalogError,
     compile_subagent,
     install,
     load_roles,
     sign_role,
 )
+from .supervisor.governor import Governor
+from .supervisor.loop import Supervisor
 from .tools.bindings import install_binding, load_bindings, sign_binding
 
 __all__ = ["main"]
@@ -226,6 +237,70 @@ def cmd_agents(args) -> int:
     return 0
 
 
+def cmd_run(args) -> int:
+    """Run one task: assemble the whole stack and hand it to the supervisor."""
+    config, store = _load(args)
+    issuer = _operator_key(config, args)
+
+    bindings, rejected = load_bindings(store, config.policy)
+    for ident, exc in rejected:
+        print(f"  warning: binding {ident} ignored — {exc}", file=sys.stderr)
+    roles, role_rejects = load_roles(store, config.policy, bindings)
+    for name, exc in role_rejects:
+        print(f"  warning: role {name} ignored — {exc}", file=sys.stderr)
+    if not roles:
+        raise SystemExit("no subagents installed; compile one first")
+
+    provider = OpenRouterClient(config.provider)
+    loader = Loader(args.prompts or "prompts",
+                    agent_roots=[r.path for r in config.policy.roots.values()])
+
+    transports = {}
+    try:
+        for name in config.servers:
+            transport = MCPTransport(name, _server_target(config, name))
+            transport.__enter__()
+            transports[name] = transport
+
+        ledger = Ledger(config.ledger)
+        engine = AdmissionEngine(
+            store, config.policy, ledger, issuer, bindings,
+            config=config.admission,
+            escalation_handler=cli_handler(timeout=args.escalation_timeout),
+        )
+        budget = config.budget
+        gateway = Gateway(engine, transports, Vault(), budget)
+        for ident, why in gateway.verify_schemas():
+            print(f"  warning: {ident[0]}/{ident[1]} disabled — {why}", file=sys.stderr)
+
+        options = sorted({t for role in roles.values() for t in role.tools()})
+        supervisor = Supervisor(
+            engine=engine, gateway=gateway, catalog=Catalog(roles),
+            runner=Runner(engine, gateway, issuer),
+            governor=Governor(provider, loader), policy=config.policy,
+            budget=budget, choose=model_chooser(provider, options),
+        )
+        result = supervisor.run(args.task)
+    except ProviderError as exc:
+        print(f"provider: {exc}", file=sys.stderr)
+        return 3
+    finally:
+        for transport in transports.values():
+            transport.__exit__(None, None, None)
+        store.close()
+
+    print(f"\nhalted: {result.halted}   turns: {result.turns}   "
+          f"subagents: {len(result.subagents)}")
+    if result.summary:
+        print(f"summary: {result.summary}")
+    for sub in result.subagents:
+        print(f"  {sub['role']:<14} {sub['status']:<8} "
+              f"{sub['tool_calls']} calls, {sub['denied']} denied")
+    print("\nThe summary is the governor's own claim. Check it against the "
+          "ledger:\n  agent-server ledger --tail 20")
+    return 0
+
+
 def cmd_ledger(args) -> int:
     config, _store = _load(args)
     ledger = Ledger(config.ledger)
@@ -281,6 +356,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("agents", help="list registered agent identities")
     p.add_argument("--limit", type=int, default=20)
     p.set_defaults(func=cmd_agents)
+
+    p = sub.add_parser("run", help="run one task")
+    p.add_argument("task")
+    p.add_argument("--key", help="operator key")
+    p.add_argument("--prompts", help="prompt directory (default ./prompts)")
+    p.add_argument("--escalation-timeout", type=int, default=120)
+    p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("ledger", help="verify the audit chain")
     p.add_argument("--tail", type=int, default=0, help="also print the last N entries")

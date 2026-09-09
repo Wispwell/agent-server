@@ -125,7 +125,17 @@ agent-server bind tools read_file  --capability cap:fs.read  --field path
 agent-server bind tools write_file --capability cap:fs.write --field path
 agent-server compile agents/reporter.subagent.yaml
 agent-server roles                        # what is installed
+
+export OPENROUTER_API_KEY=...             # and set provider.model in config.yaml
+agent-server run "summarise the q3 report"
+agent-server ledger --tail 20             # check the summary against what ran
 ```
+
+`prompts/` holds the operator-authored system instructions and rulesets that
+become the trusted layers of an agent's context. The loader refuses a prompt
+directory that sits inside any agent-writable root — a skill file is part of an
+agent's system prompt, and an agent that could write there would be authoring
+its own instructions.
 
 **Configuration and authored artifacts are different things**, and the layout
 enforces the distinction. `config.yaml` holds configuration: the trust anchor,

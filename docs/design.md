@@ -911,6 +911,18 @@ immediate next step; container isolation follows. Neither is done.
   entry-capped so it can be assembled every turn, which means a governor can be
   unaware of resources that exist within its own ceiling. Cheap to reason about,
   but it is a partial view and not a complete one.
+- **The loop is synchronous.** Subagents run to completion inside dispatch, so
+  there is nothing to supervise concurrently and asynchronous dispatch would
+  buy nothing today; the governor call is bounded by the provider timeout
+  instead. Two consequences are honest no-ops until subagents run
+  concurrently: `max_concurrent` never fires — `max_spawns` is the cap that
+  bites — and `kill` has nothing to kill, so it is refused rather than
+  silently succeeding.
+- **Optimistic concurrency cannot fire from a moving world in v0.** The
+  observation version is echoed and checked, but a synchronous loop cannot
+  change state between observing and validating. The check still catches a
+  model answering the wrong observation, which is a real signal, but the race
+  it exists for does not arise yet.
 - **Escalation is a CLI prompt.** No queue UI, no notification path.
 - **No formal verification.** The TLA+ work the prior art does is not
   replicated here.
