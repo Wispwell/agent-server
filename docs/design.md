@@ -26,7 +26,7 @@ This is the spine of the design; everything else follows from it.
 
 **Trusted** — deterministic, auditable, small:
 
-- the containment server: admission engine, ledger, secret vault
+- the containment server: admission engine, ledger, credential vault
 - the supervisor: control plane, role catalog, budgets
 - the human at the escalation queue
 

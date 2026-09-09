@@ -77,7 +77,7 @@ references.
 src/agentserver/
   crypto/       M0  Ed25519 identity, JCS canonicalisation, capability + execution tokens
   ledger/       M0  append-only hash-chained audit log
-  containment/  M1  admission engine, risk state, registry, escalation, secret vault
+  containment/  M1  admission engine, agent registry and risk state, escalation, store
   tools/        M1  signed bindings, resource resolvers
   supervisor/   M2  the loop, observation, role catalog + behaviour trees, budgets,
                     contract, and governor.py — the planner, assembled from the

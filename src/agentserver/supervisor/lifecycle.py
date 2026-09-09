@@ -6,7 +6,9 @@
 attached to an already-running agent: no runtime privilege mutation, enforced
 by the transition table rather than by remembering not to.
 
-Distinct from risk state (containment/state), which is about admission history.
+Distinct from an agent's risk state — denial counts, cooldown, rate counters,
+held in the `agents` table and applied by the admission engine. Conflating the
+two destroys the ability to explain a denial.
 Conflating the two destroys the ability to explain a denial.
 """
 
