@@ -493,7 +493,36 @@ keeps reading a field that no longer means what it did. Tool *descriptions* are
 untrusted text that reaches the model; they never reach the supervisor and
 never influence admission, which reads `(server, tool, args)` and nothing else.
 
-### 5.6 State backend
+### 5.6 Configuration, artifacts, and installed state
+
+Three kinds of thing, deliberately kept apart, because conflating them is how a
+program ends up living in a settings file.
+
+| | where | why |
+|---|---|---|
+| **Configuration** | `config.yaml` | The trust anchor, the capability vocabulary, roots, thresholds, provider. Small, static, reviewed. Read once at startup. |
+| **Authored artifacts** | `*.subagent.yaml` | A subagent is a *program* — a capability set and a behaviour tree. Authored anywhere, like source. |
+| **Installed state** | the database | Signed bindings and compiled subagents. Put there by an explicit act, verified on load. |
+
+A subagent is not configuration. Writing behaviour trees into a config file
+would be coding in YAML under a configuration heading, and it would put every
+validation the catalog performs — capabilities declared, tools bound, tree
+unable to out-reach its own authority — on the startup path instead of at
+compile time, where a mistake can be reported with the file and line that
+caused it.
+
+**Compiled subagents are signed, and this matters more than for bindings.** A
+binding maps a tool to a capability; a role *declares its own capabilities*. An
+unsigned role row would let whoever can write the database mint a role with any
+authority it liked. Verification on load is what keeps the store a transport
+rather than a trust boundary — the same property, applied to the more dangerous
+object.
+
+The operator public key is therefore the one thing that cannot live in the
+database, since it is what validates the rows. It sits in `config.yaml`: a
+genuine trust anchor, containing no secret, meant to be committed and reviewed.
+
+### 5.7 State backend
 
 SQLite, holding both the signed bindings and the admission counters
 (`pattern_count` per PatternKey, `denial_count`, `cooldown_until`).
@@ -510,7 +539,7 @@ Admission opens the database read-only. Mutation goes through a separate path
 that writes the corresponding ledger entry in the same transaction, so a
 capability grant changing is as auditable as a denial.
 
-### 5.7 Escalation
+### 5.8 Escalation
 
 An escalation blocks the call and asks a human. In v0 that is a CLI prompt,
 answered synchronously, with a timeout that **denies on expiry** — an
@@ -628,7 +657,7 @@ dataset (§12), which is why it exists at M0 rather than being retrofitted.
 
 Runs through **OpenRouter** using the OpenAI SDK — OpenRouter is
 OpenAI-compatible and ships no SDK of its own. The model is a `vendor/model`
-slug in `config/governor.yaml`, never hardcoded: swapping the governor's model
+slug in `config.yaml`, never hardcoded: swapping the governor's model
 must not require a code change, and it is a variable the evals sweep.
 
 The governor has no tools. It does not tool-call; it emits one structured
@@ -904,7 +933,7 @@ mechanism.
 | Milestone | Contents |
 |---|---|
 | **M0 — trusted core** | Keypairs, sign/verify, JCS canonicalisation, tokens, ledger. No LLM; fully unit-testable in isolation. The piece that must be right. |
-| **M1 — admission engine** | SQLite state backend, signed tool bindings and the resolver set (§5.5–5.6), rule set, PatternKey counters, cooldown, ET issue/consume with single-use enforcement, escalation queue, counterfactual probe. Driven by a scripted fake agent; still no LLM. |
+| **M1 — admission engine** | SQLite state backend, signed tool bindings and the resolver set (§5.5–5.7), rule set, PatternKey counters, cooldown, ET issue/consume with single-use enforcement, escalation queue, counterfactual probe. Driven by a scripted fake agent; still no LLM. |
 | **M2 — control plane** | Supervisor loop with asynchronous dispatch and hard halt guards, observation assembly (§4.6), role catalog with behaviour trees (§4.8), budgets, behaviour-tree subagent runner, MCP gateway with server-side credential injection. |
 | **M3 — governor** | Model in the loop, structured output contract, state digest injection, status normalisation. |
 | **M4 — evaluation** | Demo scenario, eval runs, ledger dumps, diagrams, writeup. |

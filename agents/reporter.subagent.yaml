@@ -1,0 +1,35 @@
+# A subagent is a program. This artifact is compiled and installed with
+#   agent-server compile agents/reporter.subagent.yaml
+# which validates it fully — capabilities declared, tools bound, and the tree
+# unable to reach anything the role does not grant — signs it, and stores it.
+# A mistake fails here with an error, not at server startup.
+
+name: reporter
+description: Reads a report and writes a summary beside it.
+
+# Authority. Short, security-critical, rarely changes.
+capabilities:
+  - "cap:fs.read"
+  - "cap:fs.write"
+resource: "workspace/reports/**"
+
+# Behaviour. The tree bounds what this subagent will attempt, as the
+# capabilities bound what it could reach.
+tree:
+  type: sequence
+  children:
+    - type: action
+      server: tools
+      tool: read_file
+      args:
+        path: "${path}"
+      store: body
+
+    # The model leaf. An injection in what was just read can steer which call
+    # this reaches for; it cannot enlarge the set it reaches from, and
+    # containment refuses anything outside the role's scope.
+    - type: decide
+      prompt: "Summarise the document you just read, then write the summary beside it."
+      options:
+        - ["tools", "write_file"]
+      store: result

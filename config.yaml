@@ -1,0 +1,69 @@
+# agent-server configuration.
+#
+# This file is configuration and nothing else: the trust anchor, the capability
+# vocabulary, where the roots are, and the thresholds. Subagents are programs,
+# not settings — they are authored as *.subagent.yaml artifacts and compiled
+# into the database with `agent-server compile`.
+#
+# No secrets live here. The provider section names an environment variable;
+# operator entries are public keys. This file is meant to be committed and
+# reviewed, which is what you want of a trust anchor.
+
+# Who may sign installed state — tool bindings and compiled subagents.
+# Generate one with `agent-server keygen`, which prints the line to paste here.
+operators:
+  "Ej8NUCUYqBTHruuVurNNYqyrFohLwsVPPdae6vBKVGye": "Hx7iPiWibDEdhrA4eztJb6928uclqWbj3LcQIMRQ7Nc"
+
+# The capability vocabulary, and the resolver each capability accepts. A
+# capability whose resolver cannot name a resource cannot be bound at all,
+# which is what makes a shell-shaped tool unbindable rather than merely
+# discouraged.
+capabilities:
+  "cap:fs.read":
+    resolver: path_under_root
+  "cap:fs.write":
+    resolver: path_under_root
+  "cap:net.fetch":
+    resolver: url_host
+
+# Named filesystem roots. Resources render as <name>/<path relative to root>,
+# so token scopes read as `workspace/reports/**`. Relative paths resolve
+# against this file, never the working directory.
+roots:
+  workspace: ./workspace
+
+# MCP servers this deployment may reach. Which tools those servers expose is
+# not configuration — it is discovered, then pinned by `agent-server bind`.
+servers:
+  tools:
+    command: ["python", "scripts/mcp_demo_server.py"]
+    args_root: workspace        # root name passed to the server process
+
+admission:
+  rate_limit_count: 20        # calls per PatternKey within the window
+  rate_limit_window: 60       # seconds; the window slides
+  cooldown_denials: 3         # denials before an agent is locked
+  cooldown_duration: 300      # seconds locked
+  execution_token_ttl: 30     # long enough for one round trip
+  challenge_ttl: 30
+
+budget:
+  max_turns: 20
+  max_spawns: 10
+  max_concurrent: 3
+  max_wall_clock: 600
+  max_tool_calls_per_subagent: 25
+  max_tool_calls_total: 100
+
+provider:
+  base_url: "https://openrouter.ai/api/v1"
+  api_key_env: OPENROUTER_API_KEY
+  model: ""                   # OpenRouter vendor/model slug; the evals sweep this
+  max_output_tokens: 8000
+  structured_output: true
+  title: agent-server
+
+storage:
+  database: ./data/state.db
+  ledger: ./data/ledger.jsonl
+  keys: ./data/keys

@@ -30,7 +30,8 @@ from ..crypto.signing import b64u_decode, b64u_encode, sign, verify
 from ..policy import Policy
 from .resolvers import resolve
 
-__all__ = ["Binding", "BindingError", "load_bindings", "sign_binding", "verify_binding"]
+__all__ = ["Binding", "BindingError", "install_binding", "load_bindings",
+           "sign_binding", "verify_binding"]
 
 _SIGNED_FIELDS = (
     "server", "tool", "capability", "resolver", "resolver_config",
@@ -184,3 +185,18 @@ def load_bindings(
         if binding.enabled:
             accepted[binding.key] = binding
     return accepted, rejected
+
+
+def install_binding(store, row: Mapping[str, Any]) -> None:
+    """Insert or replace a signed binding row."""
+    stored = dict(row)
+    stored["resolver_config"] = json.dumps(stored["resolver_config"], sort_keys=True)
+    stored["requires_review"] = int(stored["requires_review"])
+    stored["enabled"] = int(stored["enabled"])
+    columns = ", ".join(stored)
+    marks = ", ".join("?" * len(stored))
+    with store.write() as conn:
+        conn.execute(
+            f"INSERT OR REPLACE INTO bindings ({columns}) VALUES ({marks})",
+            tuple(stored.values()),
+        )

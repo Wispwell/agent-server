@@ -39,6 +39,24 @@ CREATE TABLE IF NOT EXISTS bindings (
     PRIMARY KEY (server, tool)
 );
 
+-- Compiled subagents. A subagent is a program, not configuration: it is
+-- authored as an artifact, compiled by the CLI, and installed here.
+--
+-- Signed for the same reason bindings are, and it matters more: a role
+-- *declares its own capabilities*, so whoever could write an unsigned row
+-- would mint a role with any authority it liked. An unsigned row is ignored.
+CREATE TABLE IF NOT EXISTS roles (
+    name         TEXT PRIMARY KEY,
+    description  TEXT    NOT NULL DEFAULT '',
+    capabilities TEXT    NOT NULL,          -- JSON array
+    resource     TEXT    NOT NULL,
+    tree         TEXT    NOT NULL,          -- JSON object
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    issued_by    TEXT    NOT NULL,          -- operator AgentID
+    sig          TEXT    NOT NULL,
+    compiled_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agents (
     agent_id       TEXT PRIMARY KEY,
     public_key     TEXT    NOT NULL,          -- base64url raw Ed25519

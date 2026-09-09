@@ -44,3 +44,16 @@ def build(root: str | os.PathLike) -> MCPServer:
         return f"[fetched {urlsplit(url).hostname or '?'}]"
 
     return server
+
+
+def _main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Demo MCP server over stdio.")
+    parser.add_argument("--root", default="workspace")
+    args = parser.parse_args()
+    build(args.root).run("stdio")
+
+
+if __name__ == "__main__":
+    _main()

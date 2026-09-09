@@ -78,13 +78,18 @@ src/agentserver/
   crypto/       M0  Ed25519 identity, JCS canonicalisation, capability + execution tokens
   ledger/       M0  append-only hash-chained audit log
   containment/  M1  admission engine, risk state, registry, escalation, secret vault
-  supervisor/   M2  the loop, observation, role catalog + behaviour trees, budgets, contract
-  gateway/      M2  MCP proxy, server-side credential injection
-  subagent/     M2  behaviour-tree runner (sandboxed), proof-of-possession client
-  governor/     M3  planner via OpenRouter (UNTRUSTED, no callable tools)
+  tools/        M1  signed bindings, resource resolvers
+  supervisor/   M2  the loop, observation, role catalog + behaviour trees, budgets,
+                    contract, and governor.py — the planner, assembled from the
+                    shared components below (UNTRUSTED, no callable tools)
+  gateway/      M2  MCP proxy and transport, server-side credential injection
+  subagent/     M2  behaviour-tree engine and runner, proof-of-possession client
+  context/      M3  layered context windows and prompt/skill loading — shared
+  providers/    M3  model clients (OpenRouter via the OpenAI SDK) — shared
 evals/          M4  E1-E5 plus the counterfactual probe
 scripts/demo.py M4  the injection demo
-config/         role catalog and containment policy
+agents/         *.subagent.yaml source artifacts, compiled into the database
+config.yaml     configuration: trust anchor, capabilities, roots, thresholds
 docs/design.md  full design
 ```
 
@@ -114,12 +119,26 @@ rather than overclaiming.
 conda activate agent-server   # Python 3.13; never base
 pip install -e '.[dev]'
 pytest
+
+agent-server keygen                       # operator signing key; prints a config line
+agent-server bind tools read_file  --capability cap:fs.read  --field path
+agent-server bind tools write_file --capability cap:fs.write --field path
+agent-server compile agents/reporter.subagent.yaml
+agent-server roles                        # what is installed
 ```
+
+**Configuration and authored artifacts are different things**, and the layout
+enforces the distinction. `config.yaml` holds configuration: the trust anchor,
+the capability vocabulary, roots, thresholds. A subagent is a *program* — a
+capability set and a behaviour tree — so it is authored as an artifact and
+**compiled** into the database, signed. Writing behaviour trees into a config
+file would be coding in YAML under a configuration heading, and would move
+validation from compile time to every startup.
 
 The governor runs through **OpenRouter** using the OpenAI SDK (OpenRouter is
 OpenAI-compatible and ships no SDK of its own). Copy `.env.example` to `.env`
-and set `OPENROUTER_API_KEY`; the model slug lives in `config/governor.yaml`,
-never in code.
+and set `OPENROUTER_API_KEY`; the model slug lives in `config.yaml`, never in
+code.
 
 Structured output is best-effort on OpenRouter — support varies by model and by
 the provider actually serving the request. Non-conforming governor output is a
