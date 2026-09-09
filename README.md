@@ -93,6 +93,19 @@ config.yaml     configuration: trust anchor, capabilities, roots, thresholds
 docs/design.md  full design
 ```
 
+## Evaluations
+
+```sh
+python -m evals.run_all       # E1-E5, deterministic, offline, no API key
+python scripts/demo.py        # the narrated injection demo
+```
+
+`--live` on `run_all` or `e2_injection` puts a real model behind the Decide
+leaf. That is the only figure whose meaning changes: scripted, E2 measures the
+containment layer against an adversarial caller; live, it measures whether a
+real model is steered by what it reads. Every report says which mode produced
+it.
+
 ## Milestones
 
 - **M0 — trusted core.** Keypairs, sign/verify, canonicalisation, tokens, ledger. No LLM; fully unit-testable in isolation. This is the piece that must be right.

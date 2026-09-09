@@ -983,6 +983,22 @@ harness.
 | **E4** | Boundary Activation Rate | Fraction of decisions that were not APPROVED, plus counterfactual probes confirming DENIED remains reachable. Guards against reporting a dormant system as a working one. |
 | **E5** | Budget enforcement | Attempt runaway spawning; report the cap holding and the cost of the attempt. |
 
+All five are runnable, deterministic and offline — no API key, no network, the
+same numbers every time:
+
+```sh
+python -m evals.run_all              # every eval
+python -m evals.e2_injection --live  # E2 with a real model behind the Decide leaf
+python scripts/demo.py               # the narrated run
+```
+
+E2 is the one whose *meaning* changes with `--live`. Scripted, it measures the
+containment layer against an adversarial caller — a stub we wrote to obey the
+injection. Live, it measures whether a real model is steered by text it reads.
+The report always states which mode produced the number, because a figure
+produced by our own stub and presented as evidence about model behaviour would
+be worthless.
+
 Incidental and free once the ledger exists: per-decision latency, chain
 verification, decision counts by type.
 
